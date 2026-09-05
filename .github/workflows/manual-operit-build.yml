@@ -1,85 +1,197 @@
-name: Manual Operit build check
+name: Operit baseline Android build check (aligned to upstream)
 
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+env:
+  OPERIT_COMMIT: f323d6c50fa661837fad06d4618462861779b562
+  TERMINAL_LOCKED_SHA: e4442bc6a047b6165bf59103721ad143149c620d
+  JAVA_VERSION: '21'
+  NODE_VERSION: '22'
+  ANDROID_NDK_VERSION: '25.1.8937393'
+  ANDROID_CMAKE_VERSION: '3.22.1'
+  RUST_VERSION: '1.88.0'
+  PNPM_VERSION: '10.34.5'
+  ANDROID_API_LEVELS: '34,36'
+  BUILD_TOOLS: '34.0.0,35.0.0'
+
 jobs:
-  operit-build:
-    name: Operit original-source build verification
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
+  operit-baseline:
+    name: Operit baseline :app:assembleDebug
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
 
     steps:
-      - name: Prepare runner
+      - name: Checkout workflow repo (no credentials, no submodules)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install required system packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y git wget unzip curl openjdk-17-jdk
+          sudo apt-get install -y curl unzip build-essential cmake ninja-build pkg-config
 
-      - name: Checkout this repository (for workflow files)
-        uses: actions/checkout@v4
+      - name: Set up JDK 21
+        uses: actions/setup-java@v3
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: gradle
 
-      - name: Clone Operit at specified commit
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install pnpm
         run: |
+          corepack enable
+          corepack prepare pnpm@${{ env.PNPM_VERSION }} --activate
+
+      - name: Install Rust toolchain
+        run: |
+          curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain ${RUST_VERSION}
+          source $HOME/.cargo/env
+          rustup toolchain install ${RUST_VERSION} --profile minimal || true
+
+      - name: Clone Operit upstream at locked commit (only needed modules)
+        run: |
+          set -euo pipefail
           git clone https://github.com/AAswordman/Operit.git operit-src
           cd operit-src
           git fetch --all --tags
-          git checkout f323d6c50fa661837fad06d4618462861779b562
-          # Initialize submodules; override terminal submodule to locked SHA if needed
-          git submodule update --init --recursive || true
-          if [ -d terminal ]; then
-            cd terminal || exit 0
-            git fetch origin
-            git checkout e4442bc6a047b6165bf59103721ad143149c620d || true
-            cd ..
+          git checkout $OPERIT_COMMIT
+          # Initialize only terminal submodule (and its recursive deps)
+          git submodule sync -- terminal
+          git submodule update --init --recursive --depth 1 terminal
+          # Verify terminal HEAD matches locked SHA
+          cd terminal
+          TERM_SHA=$(git rev-parse HEAD)
+          echo "terminal submodule HEAD: $TERM_SHA"
+          if [ "$TERM_SHA" != "$TERMINAL_LOCKED_SHA" ]; then
+            echo "ERROR: terminal submodule HEAD ($TERM_SHA) does not match required $TERMINAL_LOCKED_SHA" >&2
+            exit 2
           fi
           cd ..
+          cd ..
 
-      - name: Install Android command-line tools and SDK
+      - name: Set up Android SDK (command-line tools) and install components
         env:
           ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
         run: |
-          set -e
+          set -euo pipefail
           mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
           cd "$ANDROID_SDK_ROOT"
+          # download command line tools
           curl -fsSL https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -o cmdline-tools.zip
-          unzip cmdline-tools.zip -d cmdline-tools
-          mv cmdline-tools/cmdline-tools cmdline-tools/latest || true
+          unzip -q cmdline-tools.zip -d cmdline-tools
+          mkdir -p cmdline-tools/latest
+          mv cmdline-tools/cmdline-tools/* cmdline-tools/latest/ || true
           export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
-          yes | sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --licenses || true
-          sdkmanager --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-33" "build-tools;33.0.2" || true
+          yes | sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --licenses
+          # install explicit SDK components aligned to upstream
+          sdkmanager --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" \
+            "platforms;android-34" "platforms;android-36" \
+            "build-tools;34.0.0" "build-tools;35.0.0" \
+            "ndk;${ANDROID_NDK_VERSION}" "cmake;${ANDROID_CMAKE_VERSION}"
 
-      - name: Set environment variables
+      - name: Export Android environment
         run: |
           echo "ANDROID_SDK_ROOT=${{ runner.temp }}/android-sdk" >> $GITHUB_ENV
-          echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64" >> $GITHUB_ENV
+          echo "ANDROID_HOME=${{ runner.temp }}/android-sdk" >> $GITHUB_ENV
+          echo "JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64" >> $GITHUB_ENV
 
-      - name: Run Gradle build for Operit (assemble)
+      - name: Prepare Android dependencies (download + prepare)
+        working-directory: operit-src
+        run: |
+          set -euo pipefail
+          python3 ci/script/download_android_dependencies.sh full manual-deps
+          python3 ci/script/prepare_android_dependencies.py --profile full --archives manual-deps --repository "$PWD"
+
+      - name: Build native ripgrep (arm64) - required by Operit
         working-directory: operit-src
         env:
-          ANDROID_HOME: ${{ runner.temp }}/android-sdk
-          JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.ANDROID_NDK_VERSION }}
         run: |
-          set -x
-          if [ -f gradlew ]; then
-            chmod +x ./gradlew
-            ./gradlew clean assemble -Dorg.gradle.jvmargs="-Xmx2048m" --no-daemon --stacktrace || true
-          else
-            echo "gradlew wrapper not found; attempting ./gradlew assemble anyway"
-            ./gradlew assemble || true
-          fi
-        continue-on-error: true
+          set -euo pipefail
+          source $HOME/.cargo/env || true
+          rustup default ${RUST_VERSION}
+          rustup target add aarch64-linux-android --toolchain ${RUST_VERSION}
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
+          cargo +${RUST_VERSION} build --manifest-path tools/native_ripgrep/Cargo.toml --release --target aarch64-linux-android --locked
+          install -Dm755 tools/native_ripgrep/target/aarch64-linux-android/release/liboperit_ripgrep.so app/src/main/jniLibs/arm64-v8a/liboperit_ripgrep.so
+          test -s app/src/main/jniLibs/arm64-v8a/liboperit_ripgrep.so
 
-      - name: Collect build output and logs
+      - name: Install JavaScript dependencies and build WebChat & tools
+        working-directory: operit-src
+        run: |
+          set -euo pipefail
+          corepack enable
+          corepack prepare pnpm@${PNPM_VERSION} --activate
+          pnpm install --frozen-lockfile
+          pnpm --filter web-chat --dir web-chat install --frozen-lockfile
+          pnpm -w run build:webchat
+          pnpm -w run build:examples:github || true
+          python3 tools/example_packages/sync_example_packages.py --no-hot-reload
+
+      - name: Configure Android SDK local.properties
+        working-directory: operit-src
+        run: |
+          set -euo pipefail
+          echo "sdk.dir=${{ env.ANDROID_SDK_ROOT }}" > local.properties
+
+      - name: Run Gradle :app:assembleDebug with preserved exit code and tee'd logs
+        working-directory: operit-src
+        env:
+          JAVA_HOME: /usr/lib/jvm/java-21-openjdk-amd64
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+        run: |
+          set -euo pipefail
+          # Limit Gradle memory and workers for CI
+          export GRADLE_OPTS='-Dorg.gradle.jvmargs=-Xmx2048m'
+          chmod +x ./gradlew
+          # Use pipefail and tee to capture full logs but preserve exit code
+          (./gradlew :app:assembleDebug --no-daemon --stacktrace -Dorg.gradle.parallel=false 2>&1 | tee build.log)
+          RC=${PIPESTATUS[0]}
+          echo "GRADLE_EXIT=${RC}" > gradle-exit-code.txt
+          if [ ${RC} -ne 0 ]; then
+            echo "Gradle failed with exit code ${RC}" >&2
+            exit ${RC}
+          fi
+
+      - name: Collect diagnostics (always)
         if: always()
         run: |
-          mkdir -p build-artifacts
-          cp -r operit-src/build/ build-artifacts/ || true
-          cp -r operit-src/app/build/ build-artifacts/ || true
-          cp -r operit-src/gradle* build-artifacts/ || true
-          ls -la operit-src || true
+          mkdir -p workflow-artifacts/logs
+          cp -v operit-src/build.log workflow-artifacts/logs/ 2>/dev/null || true
+          cp -v operit-src/gradle-exit-code.txt workflow-artifacts/logs/ 2>/dev/null || true
+          cp -r operit-src/app/build/ workflow-artifacts/app-build/ 2>/dev/null || true
+          ls -la operit-src/app/build || true
 
-      - name: Upload build artifacts and logs
+      - name: Upload diagnostics artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: operit-build-artifacts
-          path: build-artifacts
+          name: operit-diagnostics-${{ github.run_number }}
+          path: workflow-artifacts
+
+      - name: Upload APKs when build succeeded
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: operit-apks-${{ github.run_number }}
+          path: |
+            operit-src/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+
