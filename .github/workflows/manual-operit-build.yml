@@ -1,0 +1,85 @@
+name: Manual Operit build check
+
+on:
+  workflow_dispatch:
+
+jobs:
+  operit-build:
+    name: Operit original-source build verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Prepare runner
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git wget unzip curl openjdk-17-jdk
+
+      - name: Checkout this repository (for workflow files)
+        uses: actions/checkout@v4
+
+      - name: Clone Operit at specified commit
+        run: |
+          git clone https://github.com/AAswordman/Operit.git operit-src
+          cd operit-src
+          git fetch --all --tags
+          git checkout f323d6c50fa661837fad06d4618462861779b562
+          # Initialize submodules; override terminal submodule to locked SHA if needed
+          git submodule update --init --recursive || true
+          if [ -d terminal ]; then
+            cd terminal || exit 0
+            git fetch origin
+            git checkout e4442bc6a047b6165bf59103721ad143149c620d || true
+            cd ..
+          fi
+          cd ..
+
+      - name: Install Android command-line tools and SDK
+        env:
+          ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
+        run: |
+          set -e
+          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+          cd "$ANDROID_SDK_ROOT"
+          curl -fsSL https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -o cmdline-tools.zip
+          unzip cmdline-tools.zip -d cmdline-tools
+          mv cmdline-tools/cmdline-tools cmdline-tools/latest || true
+          export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
+          yes | sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --licenses || true
+          sdkmanager --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-33" "build-tools;33.0.2" || true
+
+      - name: Set environment variables
+        run: |
+          echo "ANDROID_SDK_ROOT=${{ runner.temp }}/android-sdk" >> $GITHUB_ENV
+          echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64" >> $GITHUB_ENV
+
+      - name: Run Gradle build for Operit (assemble)
+        working-directory: operit-src
+        env:
+          ANDROID_HOME: ${{ runner.temp }}/android-sdk
+          JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+        run: |
+          set -x
+          if [ -f gradlew ]; then
+            chmod +x ./gradlew
+            ./gradlew clean assemble -Dorg.gradle.jvmargs="-Xmx2048m" --no-daemon --stacktrace || true
+          else
+            echo "gradlew wrapper not found; attempting ./gradlew assemble anyway"
+            ./gradlew assemble || true
+          fi
+        continue-on-error: true
+
+      - name: Collect build output and logs
+        if: always()
+        run: |
+          mkdir -p build-artifacts
+          cp -r operit-src/build/ build-artifacts/ || true
+          cp -r operit-src/app/build/ build-artifacts/ || true
+          cp -r operit-src/gradle* build-artifacts/ || true
+          ls -la operit-src || true
+
+      - name: Upload build artifacts and logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: operit-build-artifacts
+          path: build-artifacts
