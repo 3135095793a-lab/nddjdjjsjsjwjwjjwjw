@@ -234,7 +234,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: HOST-ONLY-NO-AUTOJS-DO-NOT-INSTALL-${{ github.run_number }}
+          name: ENGINE-PACKAGING-CHECK-NOT-RELEASE-${{ github.run_number }}
           path: |
             app/build/outputs/apk/**/*.apk
             app/build/outputs/bundle/**/*.aab
