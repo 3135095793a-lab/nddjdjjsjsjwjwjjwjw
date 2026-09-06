@@ -1,0 +1,55 @@
+name: AutoJs Android library compilation probe (NOT fusion APK)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: autojs-library-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  compile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+          path: fusion
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          repository: SuperMonster003/AutoJs6
+          ref: ed3eb10e88db5a8425fd94bdddefa4176e5e1c94
+          persist-credentials: false
+          path: autojs
+      - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Prepare library (no original application registrations)
+        run: |
+          python3 -m unittest discover -s fusion/scripts -p 'test_*.py'
+          python3 fusion/scripts/prepare_autojs_library.py autojs
+      - name: Install SDK components
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0" "cmake;3.22.1"
+      - name: Compile library sources
+        working-directory: autojs
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          mkdir -p diagnostics
+          chmod +x gradlew
+          ./gradlew :app:compileDebugKotlin :app:compileDebugJavaWithJavac --stacktrace --no-daemon --max-workers=2 -Dorg.gradle.parallel=false -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8" 2>&1 | tee diagnostics/gradle.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > diagnostics/exit-code.txt
+          exit "$code"
+      - name: Upload diagnostics only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: autojs-library-diagnostics-${{ github.run_number }}
+          path: |
+            autojs/diagnostics/
+            autojs/fusion-library-probe.json
+          if-no-files-found: warn
