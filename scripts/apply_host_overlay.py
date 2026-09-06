@@ -38,12 +38,15 @@ def apply(root, project):
     target_dir.mkdir(parents=True, exist_ok=True)
     for source in sources:
         shutil.copyfile(source, target_dir / source.name)
-    ui_source = project / 'fusion-ui/src/main/kotlin/com/agentfusion/mobile/tasks/TaskProgressPanel.kt'
-    ui_target = root / 'app/src/main/java/com/agentfusion/mobile/tasks/TaskProgressPanel.kt'
-    if not ui_source.is_file() or ui_target.exists():
+    ui_names = ('TaskProgressPanel.kt', 'TaskProgressController.kt')
+    ui_source_dir = project / 'fusion-ui/src/main/kotlin/com/agentfusion/mobile/tasks'
+    ui_target_dir = root / 'app/src/main/java/com/agentfusion/mobile/tasks'
+    ui_sources = [ui_source_dir / name for name in ui_names]
+    if any(not source.is_file() or (ui_target_dir / source.name).exists() for source in ui_sources):
         raise ValueError('Missing UI source or target collision')
-    ui_target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(ui_source, ui_target)
+    ui_target_dir.mkdir(parents=True, exist_ok=True)
+    for source in ui_sources:
+        shutil.copyfile(source, ui_target_dir / source.name)
     from apply_navigation_overlay import apply as apply_navigation
     apply_navigation(root)
     gradle.write_text(text)
