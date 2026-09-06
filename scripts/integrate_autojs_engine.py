@@ -11,7 +11,12 @@ def main(host, autojs):
     out = host / 'autojs-engine'
     if out.exists():
         raise ValueError('Refusing to overwrite engine build')
-    shutil.copytree(autojs, out, ignore=shutil.ignore_patterns('.git', '.gradle', 'build', '__pycache__'))
+    shutil.copytree(autojs, out, ignore=shutil.ignore_patterns('.git', '.gradle', '__pycache__'))
+    # A source package is literally org/autojs/build: never exclude that name.
+    for source in (autojs / 'build-logic').rglob('*.kt'):
+        copied = out / source.relative_to(autojs)
+        if not copied.is_file() or copied.read_bytes() != source.read_bytes():
+            raise ValueError('Build plugin source missing or changed: ' + str(source))
     prepare(out)
     settings = host / 'settings.gradle.kts'
     text = settings.read_text()
