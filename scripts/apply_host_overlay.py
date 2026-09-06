@@ -31,7 +31,7 @@ def apply(root, project):
     gradle = root / 'app/build.gradle.kts'
     text = transform(gradle.read_text())
     sources = [project / 'fusion-core/src/com/agentfusion/core' / name
-               for name in ('TaskRuntime.java', 'TaskProgress.java')]
+               for name in ('TaskRuntime.java', 'TaskProgress.java', 'ExecutionCompletionGate.java')]
     target_dir = root / 'app/src/main/java/com/agentfusion/core'
     if any(not source.is_file() or (target_dir / source.name).exists() for source in sources):
         raise ValueError('Missing source or target collision')

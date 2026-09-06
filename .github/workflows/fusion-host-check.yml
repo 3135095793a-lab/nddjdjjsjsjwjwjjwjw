@@ -82,6 +82,7 @@ jobs:
           javac --release 8 -d "$out" "$RUNNER_TEMP/fusion-overlay"/fusion-core/src/com/agentfusion/core/*.java "$RUNNER_TEMP/fusion-overlay"/fusion-core/tests/com/agentfusion/core/*.java
           java -cp "$out" com.agentfusion.core.TaskRuntimeTest
           java -cp "$out" com.agentfusion.core.TaskProgressTest
+          java -cp "$out" com.agentfusion.core.ExecutionCompletionGateTest
       - name: Set up Node.js
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
