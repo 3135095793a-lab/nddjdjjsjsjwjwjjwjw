@@ -38,7 +38,7 @@ def apply(root, project):
     target_dir.mkdir(parents=True, exist_ok=True)
     for source in sources:
         shutil.copyfile(source, target_dir / source.name)
-    ui_names = ('TaskProgressPanel.kt', 'TaskProgressController.kt')
+    ui_names = ('TaskProgressPanel.kt', 'TaskProgressController.kt', 'TaskProgressScreen.kt')
     ui_source_dir = project / 'fusion-ui/src/main/kotlin/com/agentfusion/mobile/tasks'
     ui_target_dir = root / 'app/src/main/java/com/agentfusion/mobile/tasks'
     ui_sources = [ui_source_dir / name for name in ui_names]

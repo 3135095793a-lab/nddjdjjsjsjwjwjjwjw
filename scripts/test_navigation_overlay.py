@@ -14,7 +14,7 @@ class NavigationTest(unittest.TestCase):
         self.assertIn(REGISTRY, r)
         self.assertEqual(s.count('data object AgentFusionTasks'), 1)
         self.assertEqual(r.count('main.agentfusion_tasks'), 1)
-        self.assertIn('TaskProgressPanel(snapshot = null)', s)
+        self.assertIn('TaskProgressScreen()', s)
     def test_missing_anchor(self):
         with self.assertRaises(ValueError): transform('', REGISTRY)
         with self.assertRaises(ValueError): transform(SCREEN, '')
