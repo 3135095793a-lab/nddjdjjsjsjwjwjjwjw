@@ -8,6 +8,7 @@ def main(host, autojs):
     out=host/'autojs-engine'
     if out.exists(): shutil.rmtree(out)
     shutil.copytree(autojs/'app', out, ignore=shutil.ignore_patterns('build','.gradle'))
+    shutil.copytree(autojs/'build-logic', out/'build-logic', ignore=shutil.ignore_patterns('build','.gradle'))
     g=out/'build.gradle.kts'; s=g.read_text()
     s=s.replace('id("com.android.application")','id("com.android.library")')
     s=s.replace('    id("org.autojs.build.signs")\n','')
@@ -23,6 +24,7 @@ def main(host, autojs):
         manifest.write_text(text)
     settings=host/'settings.gradle.kts'; text=settings.read_text()
     if 'include(":autojs-engine")' not in text: text += '\ninclude(":autojs-engine")\n'
+    if 'includeBuild("autojs-engine/build-logic")' not in text: text += 'includeBuild("autojs-engine/build-logic")\n'
     settings.write_text(text)
     app=host/'app/build.gradle.kts'; text=app.read_text()
     if 'implementation(project(":autojs-engine"))' not in text:
