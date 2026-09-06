@@ -30,12 +30,14 @@ def apply(root, project):
         raise ValueError('Apply only to a clean upstream checkout')
     gradle = root / 'app/build.gradle.kts'
     text = transform(gradle.read_text())
-    source = project / 'fusion-core/src/com/agentfusion/core/TaskRuntime.java'
-    target = root / 'app/src/main/java/com/agentfusion/core/TaskRuntime.java'
-    if not source.is_file() or target.exists():
+    sources = [project / 'fusion-core/src/com/agentfusion/core' / name
+               for name in ('TaskRuntime.java', 'TaskProgress.java')]
+    target_dir = root / 'app/src/main/java/com/agentfusion/core'
+    if any(not source.is_file() or (target_dir / source.name).exists() for source in sources):
         raise ValueError('Missing source or target collision')
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, target)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for source in sources:
+        shutil.copyfile(source, target_dir / source.name)
     gradle.write_text(text)
     print('Host overlay applied: com.agentfusion.mobile.debug; core source included but not invoked.')
 
