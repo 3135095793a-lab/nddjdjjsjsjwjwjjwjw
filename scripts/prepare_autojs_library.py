@@ -18,6 +18,7 @@ android {
         buildConfigField("String", "VSCODE_EXT_REQUIRED_VERSION", "\\\"1.0.13\\\"")
         buildConfigField("boolean", "isInrt", "false")
         buildConfigField("String", "CHANNEL", "\\\"app\\\"")
+        buildConfigField("String", "APPLICATION_ID", "\\\"org.autojs.autojs6\\\"")
         javaCompileOptions.annotationProcessorOptions.arguments(mapOf(
             "resourcePackageName" to "org.autojs.autojs6",
             "androidManifestFile" to "$projectDir/src/main/AndroidManifest.xml"
@@ -47,12 +48,18 @@ def prepare(root):
     prefix = prefix.replace('    id("org.autojs.build.signs")\n', '').replace('utils.registerTemplateApkCopy(project)', '')
     bridge = app / 'src/main/java/org/autojs/autojs/core/accessibility/AccessibilityBridgeImpl.java'
     patched, report = verify(bridge.read_bytes())
+    log_page = app / 'src/main/java/org/autojs/autojs/ui/log/LogBottomSheet.kt'
+    log_source = log_page.read_text()
+    if log_source.count('AutoJs.getInstance()') != 2:
+        raise ValueError('Unexpected LogBottomSheet singleton anchors')
+    log_patched = log_source.replace('AutoJs.getInstance()', 'AutoJs.instance')
     # Preserve original metadata as evidence, never import upstream component registrations.
     manifest = app / 'src/main/AndroidManifest.xml'
     original = manifest.read_bytes()
     (root / 'fusion-original-manifest.xml').write_bytes(original)
     gradle.write_text(prefix + '\n' + CONFIG)
     bridge.write_text(patched)
+    log_page.write_text(log_patched)
     manifest.write_text('<manifest xmlns:android="http://schemas.android.com/apk/res/android"><application /></manifest>\n')
     report.update(stage='library-compile-probe; no host integration', originalManifestSha256=hashlib.sha256(original).hexdigest())
     marker.write_text(json.dumps(report, indent=2))
