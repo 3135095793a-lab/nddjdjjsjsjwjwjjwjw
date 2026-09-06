@@ -44,6 +44,8 @@ def apply(root, project):
         raise ValueError('Missing UI source or target collision')
     ui_target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(ui_source, ui_target)
+    from apply_navigation_overlay import apply as apply_navigation
+    apply_navigation(root)
     gradle.write_text(text)
     print('Host overlay applied: com.agentfusion.mobile.debug; core source included but not invoked.')
 

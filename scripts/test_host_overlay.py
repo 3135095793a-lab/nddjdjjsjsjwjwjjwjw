@@ -1,4 +1,7 @@
 import unittest
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from apply_host_overlay import transform
 
 SOURCE = '''namespace = "com.ai.assistance.operit"
