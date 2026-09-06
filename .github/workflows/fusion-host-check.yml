@@ -45,6 +45,14 @@ jobs:
         run: |
           set -euo pipefail
           mv fusion-input "$RUNNER_TEMP/fusion-overlay"
+      - name: Checkout pinned AutoJs6 source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          repository: SuperMonster003/AutoJs6
+          ref: ed3eb10e88db5a8425fd94bdddefa4176e5e1c94
+          path: autojs-source
+          persist-credentials: false
+
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
@@ -57,6 +65,7 @@ jobs:
           python3 "$RUNNER_TEMP/fusion-overlay/scripts/test_host_overlay.py"
           python3 "$RUNNER_TEMP/fusion-overlay/scripts/test_navigation_overlay.py"
           python3 "$RUNNER_TEMP/fusion-overlay/scripts/apply_host_overlay.py" "$GITHUB_WORKSPACE"
+          python3 "$RUNNER_TEMP/fusion-overlay/scripts/integrate_autojs_engine.py" "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/autojs-source"
       - name: Initialize terminal submodule
         shell: bash
         run: |
