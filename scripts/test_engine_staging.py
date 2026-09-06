@@ -25,37 +25,91 @@ class StagingTest(unittest.TestCase):
         self.assertIn('desugar = "2.1.5"', result)
         self.assertEqual(align_catalog(result, APP), result)
 
+        # Leading whitespace on [versions] and indented sections
+        indented_catalog = f"""  [versions]
+agp = "8.13.2"
+desugar = "2.0.4"
+  [libraries]
+desugar-jdk = {{ group = "com.android.tools", name = "desugar_jdk_libs", version.ref = "desugar" }}
+"""
+        indented_res = align_catalog(indented_catalog, APP)
+        self.assertIn('desugar = "2.1.5"', indented_res)
+        self.assertEqual(align_catalog(indented_res, APP), indented_res)
+
+        # Verbatim preservation of unrelated versions, libraries, and comments
+        complex_catalog = f"""# Top-level comment
+[versions]
+# Version comments
+agp = "8.13.2" # inline comment
+desugar = "2.0.4"
+kotlin = "2.2.21"
+
+[libraries]
+# Lib comment
+desugar-jdk = {{ group = "com.android.tools", name = "desugar_jdk_libs", version.ref = "desugar" }}
+other-lib = "foo:bar:1.0"
+"""
+        aligned_complex = align_catalog(complex_catalog, APP)
+        expected_complex = complex_catalog.replace('"2.0.4"', '"2.1.5"', 1)
+        self.assertEqual(aligned_complex, expected_complex)
+
     def test_invalid_catalog_inputs(self):
         for text, app in [
             (CATALOG, ""),
             (CATALOG, APP + APP),
             (CATALOG.replace("2.0.4", "2.0.3"), APP),
             (CATALOG.replace("[libraries]", 'desugar = "2.0.4"\n[libraries]'), APP),
+            (CATALOG.replace("desugar = \"2.0.4\"", ""), APP),
             (CATALOG.replace("desugar-jdk", "other-lib"), APP),
+            (CATALOG.replace('group = "com.android.tools"', 'group = "other.tools"'), APP),
+            (CATALOG.replace('name = "desugar_jdk_libs"', 'name = "other_libs"'), APP),
+            (CATALOG.replace('version.ref = "desugar"', 'version.ref = "other_ref"'), APP),
             (CATALOG.replace('version.ref = "desugar"', 'version = "2.0.4"'), APP),
         ]:
             with self.subTest(text=text, app=app), self.assertRaises(ValueError):
                 align_catalog(text, app)
 
     def test_pre_checks_failure_leaves_host_untouched(self):
-        with tempfile.TemporaryDirectory() as d:
-            root = Path(d)
-            host, source = root / "host", root / "source"
-            (host / "app").mkdir(parents=True)
-            (host / "gradle").mkdir()
-            (host / "gradle/libs.versions.toml").write_text(CATALOG)
-            source.mkdir()
-            (source / "version.properties").write_text("OVERRIDDEN_ANDROID_GRADLE_PLUGIN_VERSION=NONE\n")
-            (host / "settings.gradle.kts").write_text('rootProject.name = "host"\n')
-            (host / "app/build.gradle.kts").write_text("dependencies {\n}\n")
+        cases = [
+            ("corrupted_app_desugar", lambda h, s: (h / "app/build.gradle.kts").write_text("dependencies {\n}\n")),
+            ("missing_app", lambda h, s: (h / "app/build.gradle.kts").unlink()),
+            ("missing_settings", lambda h, s: (h / "settings.gradle.kts").unlink()),
+            ("missing_catalog", lambda h, s: (h / "gradle/libs.versions.toml").unlink()),
+            ("missing_dependencies_anchor", lambda h, s: (h / "app/build.gradle.kts").write_text(APP.replace("dependencies {", "no_anchor {"))),
+            ("duplicate_dependencies_anchor", lambda h, s: (h / "app/build.gradle.kts").write_text(APP + "\n" + APP)),
+            ("already_registered_include", lambda h, s: (h / "settings.gradle.kts").write_text('includeBuild("autojs-engine")\n')),
+            ("already_registered_dep", lambda h, s: (h / "app/build.gradle.kts").write_text(APP + '\n    implementation("org.agentfusion:autojs-engine:1.0")\n')),
+            ("missing_upstream_version", lambda h, s: (s / "version.properties").unlink()),
+            ("corrupted_upstream_agp", lambda h, s: (s / "version.properties").write_text("NO_AGP_OVERRIDE=1\n")),
+        ]
+        for name, corrupt in cases:
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                host, source = root / "host", root / "source"
+                (host / "app").mkdir(parents=True)
+                (host / "gradle").mkdir()
+                (host / "gradle/libs.versions.toml").write_text(CATALOG)
+                source.mkdir()
+                (source / "version.properties").write_text("OVERRIDDEN_ANDROID_GRADLE_PLUGIN_VERSION=NONE\n")
+                (host / "settings.gradle.kts").write_text('rootProject.name = "host"\n')
+                (host / "app/build.gradle.kts").write_text(APP)
 
-            with patch("integrate_autojs_engine.subprocess.check_output", return_value=PIN):
-                with self.assertRaises(ValueError):
-                    main(host, source)
+                corrupt(host, source)
 
-            self.assertFalse((host / "autojs-engine").exists())
-            self.assertEqual((host / "gradle/libs.versions.toml").read_text(), CATALOG)
-            self.assertNotIn("autojs-engine", (host / "settings.gradle.kts").read_text())
+                # Snapshot existing host files
+                snapshot = {p: p.read_bytes() for p in host.rglob("*") if p.is_file()}
+
+                with patch("integrate_autojs_engine.subprocess.check_output", return_value=PIN), \
+                     patch("integrate_autojs_engine.prepare") as mock_prepare:
+                    with self.assertRaises(ValueError):
+                        main(host, source)
+                    mock_prepare.assert_not_called()
+
+                self.assertFalse((host / "autojs-engine").exists())
+                # Verify untouched host files
+                for p, content in snapshot.items():
+                    self.assertTrue(p.exists(), f"File disappeared: {p}")
+                    self.assertEqual(p.read_bytes(), content, f"File altered: {p}")
 
     def test_plugin_sources_and_composite_dependency_survive(self):
         with tempfile.TemporaryDirectory() as d:
