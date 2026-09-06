@@ -14,7 +14,7 @@ def transform(screens, registry):
                 onError: (String) -> Unit,
                 onGestureConsumed: (Boolean) -> Unit
         ) {
-            com.agentfusion.mobile.tasks.TaskProgressPanel(snapshot = null)
+            com.agentfusion.mobile.tasks.TaskProgressScreen()
         }
     }
 '''
