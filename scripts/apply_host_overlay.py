@@ -38,6 +38,12 @@ def apply(root, project):
     target_dir.mkdir(parents=True, exist_ok=True)
     for source in sources:
         shutil.copyfile(source, target_dir / source.name)
+    ui_source = project / 'fusion-ui/src/main/kotlin/com/agentfusion/mobile/tasks/TaskProgressPanel.kt'
+    ui_target = root / 'app/src/main/java/com/agentfusion/mobile/tasks/TaskProgressPanel.kt'
+    if not ui_source.is_file() or ui_target.exists():
+        raise ValueError('Missing UI source or target collision')
+    ui_target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(ui_source, ui_target)
     gradle.write_text(text)
     print('Host overlay applied: com.agentfusion.mobile.debug; core source included but not invoked.')
 
