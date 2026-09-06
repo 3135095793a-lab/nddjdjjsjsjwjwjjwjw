@@ -1,6 +1,6 @@
 """Preserve pinned AutoJs settings in a composite source Library build."""
 from pathlib import Path
-import argparse, shutil, subprocess
+import argparse, shutil, subprocess, re, tomllib
 from prepare_autojs_library import prepare, PIN
 
 def main(host, autojs):
@@ -17,6 +17,15 @@ def main(host, autojs):
         copied = out / source.relative_to(autojs)
         if not copied.is_file() or copied.read_bytes() != source.read_bytes():
             raise ValueError('Build plugin source missing or changed: ' + str(source))
+    catalog = tomllib.loads((host / 'gradle/libs.versions.toml').read_text())
+    agp = catalog['versions']['agp']
+    version_file = out / 'version.properties'
+    versions, count = re.subn(r'^OVERRIDDEN_ANDROID_GRADLE_PLUGIN_VERSION=.*$',
+        'OVERRIDDEN_ANDROID_GRADLE_PLUGIN_VERSION=' + agp,
+        version_file.read_text(), flags=re.M)
+    if count != 1:
+        raise ValueError('Missing or ambiguous upstream AGP override')
+    version_file.write_text(versions)
     prepare(out)
     settings = host / 'settings.gradle.kts'
     text = settings.read_text()

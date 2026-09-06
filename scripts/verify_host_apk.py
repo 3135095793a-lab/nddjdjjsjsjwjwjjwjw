@@ -1,4 +1,5 @@
 """Verify actual APK manifest and signature; not a runtime compatibility test."""
+from check_engine_dex import verify_engine
 import hashlib
 import json
 import os
@@ -23,8 +24,8 @@ for apk in apks:
     with apk.open('rb') as source:
         for chunk in iter(lambda: source.read(1024 * 1024), b''):
             digest.update(chunk)
-    records.append({'file': apk.name, 'applicationId': match.group(1), 'sha256': digest.hexdigest(), 'bytes': apk.stat().st_size})
+    records.append({'engine': verify_engine(apk), 'file': apk.name, 'applicationId': match.group(1), 'sha256': digest.hexdigest(), 'bytes': apk.stat().st_size})
 report = root / 'build-diagnostics/host-apk-check.json'
 report.parent.mkdir(parents=True, exist_ok=True)
-report.write_text(json.dumps({'stage': 'host-only; no AutoJs6 integration', 'apks': records}, indent=2))
+report.write_text(json.dumps({'stage': 'engine packaged; runtime NOT verified', 'apks': records}, indent=2))
 print(report.read_text())
