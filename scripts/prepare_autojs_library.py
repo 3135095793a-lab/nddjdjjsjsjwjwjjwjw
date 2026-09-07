@@ -4,6 +4,7 @@ Run only in a disposable copy; retains upstream dependencies for first diagnosti
 """
 import argparse, hashlib, json, re
 from pathlib import Path
+from xml.etree import ElementTree
 from verify_autojs_bridge import verify
 
 PIN = 'ed3eb10e88db5a8425fd94bdddefa4176e5e1c94'
@@ -41,7 +42,6 @@ LEGACY_COLORS = {
     'legacy_console_verbose': '#dfc0c0c0',
 }
 
-
 def transform_log_resources(layout_source, colors_source):
     references = {
         '@color/console_debug': '@color/legacy_console_debug',
@@ -52,10 +52,6 @@ def transform_log_resources(layout_source, colors_source):
             raise ValueError('Missing or ambiguous layout color anchor: ' + old)
         if new in layout_source:
             raise ValueError('Layout already contains legacy color reference: ' + new)
-    for name in ('console_debug', 'console_verbose'):
-        old_pattern = r"<color\s+name=['\"]" + re.escape(name) + r"['\"]"
-        if len(re.findall(old_pattern, colors_source)):
-            raise ValueError('Conflicting old color resource: ' + name)
     for name, value in LEGACY_COLORS.items():
         pattern = r"<color\s+name=['\"]" + re.escape(name) + r"['\"]\s*>([^<]+)</color>"
         matches = re.findall(pattern, colors_source)
@@ -65,6 +61,22 @@ def transform_log_resources(layout_source, colors_source):
     for old, new in references.items():
         patched = patched.replace(old, new)
     return patched
+
+
+def reject_conflicting_old_colors(resource_root):
+    for resource_file in resource_root.glob('values*/*.xml'):
+        try:
+            tree = ElementTree.parse(resource_file)
+        except ElementTree.ParseError as error:
+            raise ValueError('Invalid values resource XML: ' + str(resource_file)) from error
+        for element in tree.getroot():
+            name = element.get('name')
+            is_color = element.tag == 'color' or (
+                element.tag == 'item' and element.get('type') == 'color'
+            )
+            if is_color and name in ('console_debug', 'console_verbose'):
+                raise ValueError('Conflicting old color resource: ' + name)
+
 
 
 def prepare(root):
@@ -88,6 +100,7 @@ def prepare(root):
     log_patched = log_source.replace('AutoJs.getInstance()', 'AutoJs.instance')
     layout = app / 'src/main/res/layout/bottom_sheet_log.xml'
     colors = app / 'src/main/res/values/colors_legacy.xml'
+    reject_conflicting_old_colors(app / 'src/main/res')
     log_layout_patched = transform_log_resources(layout.read_text(), colors.read_text())
     # Preserve original metadata as evidence, never import upstream component registrations.
     manifest = app / 'src/main/AndroidManifest.xml'
