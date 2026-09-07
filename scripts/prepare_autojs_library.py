@@ -2,9 +2,10 @@
 No original Application/service/provider is registered. Not host-integrated.
 Run only in a disposable copy; retains upstream dependencies for first diagnostics.
 """
-import argparse, hashlib, json
+import argparse, hashlib, json, re
 from pathlib import Path
 from verify_autojs_bridge import verify
+
 PIN = 'ed3eb10e88db5a8425fd94bdddefa4176e5e1c94'
 CONFIG = '''
 android {
@@ -34,6 +35,38 @@ android {
     lint { abortOnError = true }
 }
 '''
+
+LEGACY_COLORS = {
+    'legacy_console_debug': '#cc000000',
+    'legacy_console_verbose': '#dfc0c0c0',
+}
+
+
+def transform_log_resources(layout_source, colors_source):
+    references = {
+        '@color/console_debug': '@color/legacy_console_debug',
+        '@color/console_verbose': '@color/legacy_console_verbose',
+    }
+    for old, new in references.items():
+        if layout_source.count(old) != 1:
+            raise ValueError('Missing or ambiguous layout color anchor: ' + old)
+        if new in layout_source:
+            raise ValueError('Layout already contains legacy color reference: ' + new)
+    for name in ('console_debug', 'console_verbose'):
+        old_pattern = r"<color\s+name=['\"]" + re.escape(name) + r"['\"]"
+        if len(re.findall(old_pattern, colors_source)):
+            raise ValueError('Conflicting old color resource: ' + name)
+    for name, value in LEGACY_COLORS.items():
+        pattern = r"<color\s+name=['\"]" + re.escape(name) + r"['\"]\s*>([^<]+)</color>"
+        matches = re.findall(pattern, colors_source)
+        if len(matches) != 1 or matches[0].strip() != value:
+            raise ValueError('Missing, duplicate, or invalid legacy color: ' + name)
+    patched = layout_source
+    for old, new in references.items():
+        patched = patched.replace(old, new)
+    return patched
+
+
 def prepare(root):
     app = root / 'app'
     marker = root / 'fusion-library-probe.json'
@@ -53,13 +86,17 @@ def prepare(root):
     if log_source.count('AutoJs.getInstance()') != 2:
         raise ValueError('Unexpected LogBottomSheet singleton anchors')
     log_patched = log_source.replace('AutoJs.getInstance()', 'AutoJs.instance')
+    layout = app / 'src/main/res/layout/bottom_sheet_log.xml'
+    colors = app / 'src/main/res/values/colors_legacy.xml'
+    log_layout_patched = transform_log_resources(layout.read_text(), colors.read_text())
     # Preserve original metadata as evidence, never import upstream component registrations.
     manifest = app / 'src/main/AndroidManifest.xml'
     original = manifest.read_bytes()
-    (root / 'fusion-original-manifest.xml').write_bytes(original)
     gradle.write_text(prefix + '\n' + CONFIG)
     bridge.write_text(patched)
     log_page.write_text(log_patched)
+    layout.write_text(log_layout_patched)
+    (root / 'fusion-original-manifest.xml').write_bytes(original)
     manifest.write_text('<manifest xmlns:android="http://schemas.android.com/apk/res/android"><application /></manifest>\n')
     report.update(stage='library-compile-probe; no host integration', originalManifestSha256=hashlib.sha256(original).hexdigest())
     marker.write_text(json.dumps(report, indent=2))
