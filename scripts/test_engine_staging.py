@@ -71,18 +71,19 @@ other-lib = "foo:bar:1.0"
 
     def test_pre_checks_failure_leaves_host_untouched(self):
         cases = [
-            ("corrupted_app_desugar", lambda h, s: (h / "app/build.gradle.kts").write_text("dependencies {\n}\n")),
-            ("missing_app", lambda h, s: (h / "app/build.gradle.kts").unlink()),
-            ("missing_settings", lambda h, s: (h / "settings.gradle.kts").unlink()),
-            ("missing_catalog", lambda h, s: (h / "gradle/libs.versions.toml").unlink()),
-            ("missing_dependencies_anchor", lambda h, s: (h / "app/build.gradle.kts").write_text(APP.replace("dependencies {", "no_anchor {"))),
-            ("duplicate_dependencies_anchor", lambda h, s: (h / "app/build.gradle.kts").write_text(APP + "\n" + APP)),
-            ("already_registered_include", lambda h, s: (h / "settings.gradle.kts").write_text('includeBuild("autojs-engine")\n')),
-            ("already_registered_dep", lambda h, s: (h / "app/build.gradle.kts").write_text(APP + '\n    implementation("org.agentfusion:autojs-engine:1.0")\n')),
-            ("missing_upstream_version", lambda h, s: (s / "version.properties").unlink()),
-            ("corrupted_upstream_agp", lambda h, s: (s / "version.properties").write_text("NO_AGP_OVERRIDE=1\n")),
+            ("corrupted_app_desugar", lambda h, s: (h / "app/build.gradle.kts").write_text("dependencies {\n}\n"), "Missing or ambiguous host desugar dependency"),
+            ("missing_app", lambda h, s: (h / "app/build.gradle.kts").unlink(), "Missing host app/build.gradle.kts"),
+            ("missing_settings", lambda h, s: (h / "settings.gradle.kts").unlink(), "Missing host settings.gradle.kts"),
+            ("missing_catalog", lambda h, s: (h / "gradle/libs.versions.toml").unlink(), "Missing host libs.versions.toml"),
+            ("missing_dependencies_anchor", lambda h, s: (h / "app/build.gradle.kts").write_text(APP.replace("dependencies {", "no_anchor {")), "Missing or ambiguous dependencies anchor"),
+            ("duplicate_dependencies_anchor", lambda h, s: (h / "app/build.gradle.kts").write_text(APP + "\ndependencies {\n}\n"), "Missing or ambiguous dependencies anchor"),
+            ("already_registered_include", lambda h, s: (h / "settings.gradle.kts").write_text('includeBuild("autojs-engine")\n'), "Engine already registered"),
+            ("already_registered_dep", lambda h, s: (h / "app/build.gradle.kts").write_text(APP + '\n    implementation("org.agentfusion:autojs-engine:1.0")\n'), "Engine already registered"),
+            ("missing_upstream_version", lambda h, s: (s / "version.properties").unlink(), "Missing upstream version.properties"),
+            ("corrupted_upstream_agp", lambda h, s: (s / "version.properties").write_text("NO_AGP_OVERRIDE=1\n"), "Missing or ambiguous upstream AGP override"),
+            ("duplicate_upstream_agp", lambda h, s: (s / "version.properties").write_text("OVERRIDDEN_ANDROID_GRADLE_PLUGIN_VERSION=8.13.2\nOVERRIDDEN_ANDROID_GRADLE_PLUGIN_VERSION=8.13.2\n"), "Missing or ambiguous upstream AGP override"),
         ]
-        for name, corrupt in cases:
+        for name, corrupt, expected_regex in cases:
             with self.subTest(case=name), tempfile.TemporaryDirectory() as d:
                 root = Path(d)
                 host, source = root / "host", root / "source"
@@ -96,20 +97,19 @@ other-lib = "foo:bar:1.0"
 
                 corrupt(host, source)
 
-                # Snapshot existing host files
-                snapshot = {p: p.read_bytes() for p in host.rglob("*") if p.is_file()}
+                # Snapshot existing host files (relative path -> bytes)
+                snapshot = {p.relative_to(host): p.read_bytes() for p in host.rglob("*") if p.is_file()}
 
                 with patch("integrate_autojs_engine.subprocess.check_output", return_value=PIN), \
                      patch("integrate_autojs_engine.prepare") as mock_prepare:
-                    with self.assertRaises(ValueError):
+                    with self.assertRaisesRegex(ValueError, expected_regex):
                         main(host, source)
                     mock_prepare.assert_not_called()
 
                 self.assertFalse((host / "autojs-engine").exists())
-                # Verify untouched host files
-                for p, content in snapshot.items():
-                    self.assertTrue(p.exists(), f"File disappeared: {p}")
-                    self.assertEqual(p.read_bytes(), content, f"File altered: {p}")
+                # Exact bidirectional comparison of full host files mapping
+                post_snapshot = {p.relative_to(host): p.read_bytes() for p in host.rglob("*") if p.is_file()}
+                self.assertEqual(post_snapshot, snapshot)
 
     def test_plugin_sources_and_composite_dependency_survive(self):
         with tempfile.TemporaryDirectory() as d:
