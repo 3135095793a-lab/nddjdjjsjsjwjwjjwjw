@@ -6,7 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 from integrate_autojs_engine import (
-    main, align_catalog, transform_bouncycastle_dependencies, PIN,
+    main, align_catalog, transform_bouncycastle_dependencies, PDFBOX_ANCHOR,
+    HOST_BCPROV_ANCHOR, PIN,
 )
 
 
@@ -26,6 +27,7 @@ APP = """dependencies {
     }
 
     implementation("org.bouncycastle:bcprov-jdk18on:1.78")
+    implementation(libs.pdfbox)
 """
 PARSER = """dependencies {
     implementation(libs.bcprov.jdk15on)
@@ -51,6 +53,33 @@ class StagingTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'already applied'):
                 transform_bouncycastle_dependencies(root, result)
 
+    def test_bouncycastle_transform_preserves_unrelated_host_rules(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            parser = root / 'modules/apk-parser/build.gradle.kts'
+            parser.parent.mkdir(parents=True)
+            parser.write_text(PARSER)
+            extra = '\nconfigurations.all { resolutionStrategy.failOnVersionConflict() }\n'
+            result = transform_bouncycastle_dependencies(root, APP + extra)
+            self.assertIn(extra, result)
+            self.assertIn('implementation(libs.pdfbox) {', result)
+            self.assertNotIn('configurations.all {\n        exclude(group = "org.bouncycastle", module = "bcpkix-jdk15to18")', result)
+
+    def test_bouncycastle_transform_rejects_duplicate_host_anchors(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            parser = root / 'modules/apk-parser/build.gradle.kts'
+            parser.parent.mkdir(parents=True)
+            parser.write_text(PARSER)
+            before = parser.read_bytes()
+            for host, expected in (
+                (APP + '\n' + PDFBOX_ANCHOR, 'PDFBox dependency anchor'),
+                (APP + '\n' + HOST_BCPROV_ANCHOR, 'provider anchor'),
+            ):
+                with self.subTest(expected=expected), self.assertRaisesRegex(ValueError, expected):
+                    transform_bouncycastle_dependencies(root, host)
+                self.assertEqual(parser.read_bytes(), before)
+
     def test_fixed_autojs_fixture_transform(self):
         source_root = os.environ.get('AUTOJS_SOURCE_ROOT')
         if not source_root:
@@ -61,7 +90,10 @@ class StagingTest(unittest.TestCase):
             parser = root / 'modules/apk-parser/build.gradle.kts'
             parser.parent.mkdir(parents=True)
             shutil.copy2(source / 'modules/apk-parser/build.gradle.kts', parser)
-            host = (Path('/root/agentfusion-ci/bc-host-evidence/app-build.gradle.kts')).read_text()
+            host_path = os.environ.get('OPERIT_HOST_APP_BUILD')
+            if not host_path:
+                self.skipTest('OPERIT_HOST_APP_BUILD is not set')
+            host = Path(host_path).read_text()
             result = transform_bouncycastle_dependencies(root, host)
             parser_text = parser.read_text()
             self.assertEqual(parser_text.count('bcprov-jdk18on:1.78'), 1)
@@ -76,7 +108,7 @@ class StagingTest(unittest.TestCase):
             parser.parent.mkdir(parents=True)
             parser.write_text(PARSER)
             before = parser.read_bytes()
-            with self.assertRaisesRegex(ValueError, 'configuration strategy'):
+            with self.assertRaisesRegex(ValueError, 'PDFBox dependency anchor'):
                 transform_bouncycastle_dependencies(root, 'dependencies { }')
             self.assertEqual(parser.read_bytes(), before)
 

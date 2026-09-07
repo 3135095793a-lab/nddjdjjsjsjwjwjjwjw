@@ -4,11 +4,18 @@ import argparse, os, shutil, subprocess, re, tempfile, tomllib
 from prepare_autojs_library import prepare, PIN
 
 BC_VERSION = '1.78'
-BC_DEPENDENCIES = (
-    ('bcprov-jdk15to18', 'bcprov-jdk18on'),
-    ('bcpkix-jdk15to18', 'bcpkix-jdk18on'),
-    ('bcutil-jdk15to18', 'bcutil-jdk18on'),
-)
+PDFBOX_ANCHOR = '    implementation(libs.pdfbox)'
+HOST_BCPROV_ANCHOR = '    implementation("org.bouncycastle:bcprov-jdk18on:1.78")'
+PDFBOX_BC_EXCLUSIONS = '''    implementation(libs.pdfbox) {
+        exclude(group = "org.bouncycastle", module = "bcprov-jdk15to18")
+        exclude(group = "org.bouncycastle", module = "bcpkix-jdk15to18")
+        exclude(group = "org.bouncycastle", module = "bcutil-jdk15to18")
+    }'''
+HOST_BC_ADDITIONS = '''    // Keep one Bouncy Castle artifact family; artifact names describe compatibility,
+    // not a requirement that Android executes on JDK 18.
+    implementation("org.bouncycastle:bcpkix-jdk18on:1.78")
+    implementation("org.bouncycastle:bcutil-jdk18on:1.78")'''
+
 
 
 def transform_bouncycastle_dependencies(autojs_root: Path, host_app_text: str) -> str:
@@ -26,18 +33,14 @@ def transform_bouncycastle_dependencies(autojs_root: Path, host_app_text: str) -
         raise ValueError('Missing or ambiguous apk-parser BouncyCastle anchors')
     transformed_parser = parser_text.replace(old_parser, new_parser, 1)
 
-    marker = '    configurations.all {\n'
-    if host_app_text.count(marker) != 1:
-        raise ValueError('Missing or ambiguous host configuration strategy anchor')
-    if 'bcutil-jdk15to18' in host_app_text:
+    if host_app_text.count(PDFBOX_ANCHOR) != 1:
+        raise ValueError('Missing or ambiguous host PDFBox dependency anchor')
+    if host_app_text.count(HOST_BCPROV_ANCHOR) != 1:
+        raise ValueError('Missing or ambiguous host BouncyCastle provider anchor')
+    if any(module in host_app_text for module in ('bcpkix-jdk18on:1.78', 'bcutil-jdk18on:1.78')):
         raise ValueError('Host BouncyCastle strategy already applied')
-    host_block = '''    configurations.all {\n        exclude(group = "org.bouncycastle", module = "bcprov-jdk15to18")\n        exclude(group = "org.bouncycastle", module = "bcpkix-jdk15to18")\n        exclude(group = "org.bouncycastle", module = "bcutil-jdk15to18")\n    }\n\n    // Use one JDK 18 BouncyCastle family for AutoJs apk-parser and PDFBox.\n    implementation("org.bouncycastle:bcpkix-jdk18on:1.78")\n    implementation("org.bouncycastle:bcutil-jdk18on:1.78")'''
-    start = host_app_text.index(marker)
-    end = host_app_text.index('\n\n', start)
-    original_block = host_app_text[start:end]
-    if 'bcprov-jdk15to18' not in original_block:
-        raise ValueError('Missing existing host BouncyCastle exclusion')
-    transformed_host = host_app_text[:start] + host_block + host_app_text[end:]
+    transformed_host = host_app_text.replace(PDFBOX_ANCHOR, PDFBOX_BC_EXCLUSIONS, 1)
+    transformed_host = transformed_host.replace(HOST_BCPROV_ANCHOR, HOST_BCPROV_ANCHOR + '\n' + HOST_BC_ADDITIONS, 1)
     parser.write_text(transformed_parser)
     return transformed_host
 
