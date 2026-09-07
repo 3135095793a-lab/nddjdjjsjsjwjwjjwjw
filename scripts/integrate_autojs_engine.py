@@ -1,9 +1,49 @@
 """Preserve pinned AutoJs settings in a composite source Library build."""
 from pathlib import Path
-import argparse, shutil, subprocess, re, tomllib
+import argparse, os, shutil, subprocess, re, tempfile, tomllib
 from prepare_autojs_library import prepare, PIN
 
+BC_VERSION = '1.78'
+BC_DEPENDENCIES = (
+    ('bcprov-jdk15to18', 'bcprov-jdk18on'),
+    ('bcpkix-jdk15to18', 'bcpkix-jdk18on'),
+    ('bcutil-jdk15to18', 'bcutil-jdk18on'),
+)
+
+
+def transform_bouncycastle_dependencies(autojs_root: Path, host_app_text: str) -> str:
+    parser = autojs_root / 'modules/apk-parser/build.gradle.kts'
+    if not parser.is_file():
+        raise ValueError('Missing AutoJs apk-parser build.gradle.kts')
+    parser_text = parser.read_text()
+    old_parser = '''    implementation(libs.bcprov.jdk15on)
+    implementation(libs.bcpkix.jdk15on)'''
+    new_parser = '''    implementation("org.bouncycastle:bcprov-jdk18on:1.78")
+    implementation("org.bouncycastle:bcpkix-jdk18on:1.78")'''
+    if 'bcprov-jdk18on:1.78' in parser_text or 'bcpkix-jdk18on:1.78' in parser_text:
+        raise ValueError('AutoJs apk-parser BouncyCastle strategy already applied')
+    if parser_text.count(old_parser) != 1:
+        raise ValueError('Missing or ambiguous apk-parser BouncyCastle anchors')
+    transformed_parser = parser_text.replace(old_parser, new_parser, 1)
+
+    marker = '    configurations.all {\n'
+    if host_app_text.count(marker) != 1:
+        raise ValueError('Missing or ambiguous host configuration strategy anchor')
+    if 'bcutil-jdk15to18' in host_app_text:
+        raise ValueError('Host BouncyCastle strategy already applied')
+    host_block = '''    configurations.all {\n        exclude(group = "org.bouncycastle", module = "bcprov-jdk15to18")\n        exclude(group = "org.bouncycastle", module = "bcpkix-jdk15to18")\n        exclude(group = "org.bouncycastle", module = "bcutil-jdk15to18")\n    }\n\n    // Use one JDK 18 BouncyCastle family for AutoJs apk-parser and PDFBox.\n    implementation("org.bouncycastle:bcpkix-jdk18on:1.78")\n    implementation("org.bouncycastle:bcutil-jdk18on:1.78")'''
+    start = host_app_text.index(marker)
+    end = host_app_text.index('\n\n', start)
+    original_block = host_app_text[start:end]
+    if 'bcprov-jdk15to18' not in original_block:
+        raise ValueError('Missing existing host BouncyCastle exclusion')
+    transformed_host = host_app_text[:start] + host_block + host_app_text[end:]
+    parser.write_text(transformed_parser)
+    return transformed_host
+
+
 def align_catalog(text: str, app_text: str) -> str:
+
     catalog = tomllib.loads(text)
     dep = catalog.get("libraries", {}).get("desugar-jdk", {})
     if (dep.get("group"), dep.get("name"), dep.get("version")) != (
@@ -59,26 +99,7 @@ def main(host, autojs):
     if len(re.findall(r"^OVERRIDDEN_ANDROID_GRADLE_PLUGIN_VERSION=.*$", upstream_version_file.read_text(), re.M)) != 1:
         raise ValueError("Missing or ambiguous upstream AGP override in version.properties")
 
-    shutil.copytree(autojs, out, ignore=shutil.ignore_patterns('.git', '.gradle', '__pycache__'))
-    # A source package is literally org/autojs/build: never exclude that name.
-    for source in (autojs / 'build-logic').rglob('*.kt'):
-        copied = out / source.relative_to(autojs)
-        if not copied.is_file() or copied.read_bytes() != source.read_bytes():
-            raise ValueError('Build plugin source missing or changed: ' + str(source))
-    version_file = out / 'version.properties'
-    versions, count = re.subn(r'^OVERRIDDEN_ANDROID_GRADLE_PLUGIN_VERSION=.*$',
-        'OVERRIDDEN_ANDROID_GRADLE_PLUGIN_VERSION=' + agp,
-        version_file.read_text(), flags=re.M)
-    if count != 1:
-        raise ValueError('Missing or ambiguous upstream AGP override')
-    version_file.write_text(versions)
-    prepare(out)
-    catalog_path.write_text(aligned_catalog)
-    settings = host / 'settings.gradle.kts'
-    text = settings.read_text()
-    if 'includeBuild("autojs-engine")' in text:
-        raise ValueError('Engine already registered')
-    text += '''
+    settings_result = settings_text + '''
 // Source-built Library, packaged into the host APK.
 includeBuild("autojs-engine") {
     dependencySubstitution {
@@ -86,13 +107,38 @@ includeBuild("autojs-engine") {
     }
 }
 '''
-    settings.write_text(text)
-    app = host / 'app/build.gradle.kts'
-    text = app.read_text()
-    marker = 'dependencies {'
-    if marker not in text:
-        raise ValueError('Host dependencies anchor missing')
-    app.write_text(text.replace(marker, marker + '\n    implementation("org.agentfusion:autojs-engine:1.0")', 1))
+    composite_host_app = app_text.replace(
+        marker, marker + '\n    implementation("org.agentfusion:autojs-engine:1.0")', 1
+    )
+    staging = Path(tempfile.mkdtemp(prefix='.autojs-engine-', dir=host))
+    try:
+        shutil.rmtree(staging)
+        shutil.copytree(autojs, staging, ignore=shutil.ignore_patterns('.git', '.gradle', '__pycache__'))
+        transformed_host_app = transform_bouncycastle_dependencies(staging, app_text)
+        composite_host_app = transformed_host_app.replace(
+            marker, marker + '\n    implementation("org.agentfusion:autojs-engine:1.0")', 1
+        )
+        # A source package is literally org/autojs/build: never exclude that name.
+        for source in (autojs / 'build-logic').rglob('*.kt'):
+            copied = staging / source.relative_to(autojs)
+            if not copied.is_file() or copied.read_bytes() != source.read_bytes():
+                raise ValueError('Build plugin source missing or changed: ' + str(source))
+        version_file = staging / 'version.properties'
+        versions, count = re.subn(r'^OVERRIDDEN_ANDROID_GRADLE_PLUGIN_VERSION=.*$',
+            'OVERRIDDEN_ANDROID_GRADLE_PLUGIN_VERSION=' + agp,
+            version_file.read_text(), flags=re.M)
+        if count != 1:
+            raise ValueError('Missing or ambiguous upstream AGP override')
+        version_file.write_text(versions)
+        prepare(staging)
+        os.replace(staging, out)
+    except Exception:
+        if staging.exists():
+            shutil.rmtree(staging)
+        raise
+    catalog_path.write_text(aligned_catalog)
+    settings.write_text(settings_result)
+    app.write_text(composite_host_app)
     print('AUTOJS_COMPOSITE_LIBRARY_STAGED', PIN)
 
 if __name__ == '__main__':

@@ -1,9 +1,13 @@
 """Regression: build is also a legitimate Kotlin package directory."""
+import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-from integrate_autojs_engine import main, align_catalog, PIN
+from integrate_autojs_engine import (
+    main, align_catalog, transform_bouncycastle_dependencies, PIN,
+)
 
 
 
@@ -16,9 +20,65 @@ desugar-jdk = { group = "com.android.tools", name = "desugar_jdk_libs", version.
 APP = """dependencies {
     coreLibraryDesugaring(libs.desugar.jdk)
 }
+
+    configurations.all {
+        exclude(group = "org.bouncycastle", module = "bcprov-jdk15to18")
+    }
+
+    implementation("org.bouncycastle:bcprov-jdk18on:1.78")
+"""
+PARSER = """dependencies {
+    implementation(libs.bcprov.jdk15on)
+    implementation(libs.bcpkix.jdk15on)
+    implementation(libs.annotation)
+}
 """
 
 class StagingTest(unittest.TestCase):
+
+    def test_bouncycastle_transform(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            parser = root / 'modules/apk-parser/build.gradle.kts'
+            parser.parent.mkdir(parents=True)
+            parser.write_text(PARSER)
+            result = transform_bouncycastle_dependencies(root, APP)
+            self.assertIn('bcpkix-jdk18on:1.78', parser.read_text())
+            self.assertNotIn('jdk15on', parser.read_text())
+            self.assertIn('bcpkix-jdk18on:1.78', result)
+            self.assertIn('bcutil-jdk18on:1.78', result)
+            self.assertIn('bcpkix-jdk15to18', result)
+            with self.assertRaisesRegex(ValueError, 'already applied'):
+                transform_bouncycastle_dependencies(root, result)
+
+    def test_fixed_autojs_fixture_transform(self):
+        source_root = os.environ.get('AUTOJS_SOURCE_ROOT')
+        if not source_root:
+            self.skipTest('AUTOJS_SOURCE_ROOT is not set')
+        source = Path(source_root)
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            parser = root / 'modules/apk-parser/build.gradle.kts'
+            parser.parent.mkdir(parents=True)
+            shutil.copy2(source / 'modules/apk-parser/build.gradle.kts', parser)
+            host = (Path('/root/agentfusion-ci/bc-host-evidence/app-build.gradle.kts')).read_text()
+            result = transform_bouncycastle_dependencies(root, host)
+            parser_text = parser.read_text()
+            self.assertEqual(parser_text.count('bcprov-jdk18on:1.78'), 1)
+            self.assertEqual(parser_text.count('bcpkix-jdk18on:1.78'), 1)
+            self.assertIn('bcpkix-jdk18on:1.78', result)
+            self.assertIn('bcutil-jdk18on:1.78', result)
+
+    def test_bouncycastle_transform_rejects_missing_anchor_without_write(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            parser = root / 'modules/apk-parser/build.gradle.kts'
+            parser.parent.mkdir(parents=True)
+            parser.write_text(PARSER)
+            before = parser.read_bytes()
+            with self.assertRaisesRegex(ValueError, 'configuration strategy'):
+                transform_bouncycastle_dependencies(root, 'dependencies { }')
+            self.assertEqual(parser.read_bytes(), before)
 
     def test_catalog_alignment(self):
         result = align_catalog(CATALOG, APP)
@@ -110,8 +170,33 @@ other-lib = "foo:bar:1.0"
                 # Exact bidirectional comparison of full host files mapping
                 post_snapshot = {p.relative_to(host): p.read_bytes() for p in host.rglob("*") if p.is_file()}
                 self.assertEqual(post_snapshot, snapshot)
+    def test_prepare_failure_leaves_host_untouched(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            host, source = root / 'host', root / 'source'
+            (host / 'app').mkdir(parents=True)
+            (host / 'gradle').mkdir()
+            (host / 'gradle/libs.versions.toml').write_text(CATALOG)
+            source.mkdir()
+            (source / 'version.properties').write_text('OVERRIDDEN_ANDROID_GRADLE_PLUGIN_VERSION=NONE\\n')
+            parser_build = source / 'modules/apk-parser/build.gradle.kts'
+            parser_build.parent.mkdir(parents=True)
+            parser_build.write_text(PARSER)
+            (host / 'settings.gradle.kts').write_text('rootProject.name = "host"\\n')
+            (host / 'app/build.gradle.kts').write_text(APP)
+            before = {p.relative_to(host): p.read_bytes() for p in host.rglob('*') if p.is_file()}
+            with (
+                patch('integrate_autojs_engine.subprocess.check_output', return_value=PIN),
+                patch('integrate_autojs_engine.prepare', side_effect=ValueError('fixture failure')),
+            ):
+                with self.assertRaisesRegex(ValueError, 'fixture failure'):
+                    main(host, source)
+            after = {p.relative_to(host): p.read_bytes() for p in host.rglob('*') if p.is_file()}
+            self.assertEqual(after, before)
+            self.assertFalse((host / 'autojs-engine').exists())
 
     def test_plugin_sources_and_composite_dependency_survive(self):
+
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             host, source = root/'host', root/'source'
@@ -120,6 +205,9 @@ other-lib = "foo:bar:1.0"
             (host / 'gradle/libs.versions.toml').write_text(CATALOG)
             source.mkdir()
             (source/'version.properties').write_text('OVERRIDDEN_ANDROID_GRADLE_PLUGIN_VERSION=NONE\n')
+            parser_build = source / 'modules/apk-parser/build.gradle.kts'
+            parser_build.parent.mkdir(parents=True)
+            parser_build.write_text(PARSER)
             (host/'settings.gradle.kts').write_text('rootProject.name = "host"\n')
             (host / 'app/build.gradle.kts').write_text(APP)
             relative = Path('build-logic/convention/src/main/kotlin/org/autojs/build/UtilsPlugin.kt')
@@ -128,7 +216,7 @@ other-lib = "foo:bar:1.0"
             plugin.write_text('package org.autojs.build\nclass UtilsPlugin\n')
             with patch('integrate_autojs_engine.subprocess.check_output', return_value=PIN), patch('integrate_autojs_engine.prepare') as prepare:
                 main(host, source)
-                prepare.assert_called_once_with(host/'autojs-engine')
+                prepare.assert_called_once()
             self.assertEqual(plugin.read_bytes(), (host/'autojs-engine'/relative).read_bytes())
             self.assertIn('using(project(":app"))', (host/'settings.gradle.kts').read_text())
             self.assertIn('org.agentfusion:autojs-engine:1.0', (host/'app/build.gradle.kts').read_text())
