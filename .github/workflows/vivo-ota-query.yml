@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       sw_versions:
-        description: 'Comma-separated base SW versions (e.g. 14.0.12.0.W10,14.0.1.0.W50)'
+        description: 'Comma-separated base SW versions'
         required: false
         default: '14.0.12.0.W10,14.0.13.1.W10,14.0.8.7.W10,14.0.1.0.W50'
 
@@ -26,7 +26,8 @@ jobs:
             $v = $v.Trim()
             if (-not $v) { continue }
             Write-Host "===== QUERY BASE VERSION: $v ====="
-            $r = & .\jre\bin\java.exe -Djava.net.preferIPv4Stack=true -DDEVICE_TYPE=phone -DMODEL_SW_VER=PD2353 -DDEVICE_MODEL=V2353A "-DSW_VERSION=$v" -DANDROID_VER=14 -DSNP=A0000000000000A -DIS_FULL=true -Dhttps.protocols=TLSv1.2 -jar unidbg-android-0.9.10-SNAPSHOT.jar 2>&1 | Out-String
+            $jargs = @('-Djava.net.preferIPv4Stack=true','-DDEVICE_TYPE=phone','-DMODEL_SW_VER=PD2353','-DDEVICE_MODEL=V2353A',("-DSW_VERSION=$v"),'-DANDROID_VER=14','-DSNP=A0000000000000A','-DIS_FULL=true','-Dhttps.protocols=TLSv1.2','-jar','unidbg-android-0.9.10-SNAPSHOT.jar')
+            $r = & .\jre\bin\java.exe @jargs 2>&1 | Out-String
             Write-Host $r
             $all += "===== BASE $v =====`r`n" + $r
           }
