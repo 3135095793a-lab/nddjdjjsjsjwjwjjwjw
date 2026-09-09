@@ -6,32 +6,55 @@ on:
       sw_versions:
         description: 'Comma-separated base SW versions'
         required: false
-        default: '14.0.12.0.W10,14.0.13.1.W10,14.0.8.7.W10,14.0.1.0.W50'
+        default: '14.0.12.0.W10'
 
 jobs:
   ota:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Clone tracker repo
         run: git clone --depth 1 https://github.com/mytiantian001/VIVO-OTA-Tracker.git C:\tracker
         shell: pwsh
-      - name: Run OTA query (PD2353/V2353A full package)
+      - name: Run OTA query verbose + redir probing
         shell: pwsh
         run: |
-          $vers = "${{ github.event.inputs.sw_versions }}".Split(',')
           cd C:\tracker
+          $vers = "${{ github.event.inputs.sw_versions }}".Split(',')
           $all = @()
           foreach ($v in $vers) {
-            $v = $v.Trim()
-            if (-not $v) { continue }
-            Write-Host "===== QUERY BASE VERSION: $v ====="
-            $jargs = @('-Djava.net.preferIPv4Stack=true','-DDEVICE_TYPE=phone','-DMODEL_SW_VER=PD2353','-DDEVICE_MODEL=V2353A',("-DSW_VERSION=$v"),'-DANDROID_VER=14','-DSNP=A0000000000000A','-DIS_FULL=true','-Dhttps.protocols=TLSv1.2','-jar','unidbg-android-0.9.10-SNAPSHOT.jar')
+            $v = $v.Trim(); if (-not $v) { continue }
+            Write-Host "===== QUERY BASE VERSION: $v (verbose) ====="
+            $jargs = @('-Djava.net.preferIPv4Stack=true','-DDEVICE_TYPE=phone','-DMODEL_SW_VER=PD2353','-DDEVICE_MODEL=V2353A',("-DSW_VERSION=$v"),'-DANDROID_VER=14','-DSNP=A0000000000000A','-DIS_FULL=true','-DVERBOSE=true','-Dhttps.protocols=TLSv1.2','-jar','unidbg-android-0.9.10-SNAPSHOT.jar')
             $r = & .\jre\bin\java.exe @jargs 2>&1 | Out-String
             Write-Host $r
             $all += "===== BASE $v =====`r`n" + $r
           }
-          $all -join "`r`n" | Out-File -Encoding utf8 C:\tracker\ota-result.txt
+          # extract pk urls from result and probe redir variants
+          $txt = $all -join "`r`n"
+          $m = [regex]::Match($txt, 'https://sysupgrade\.vivo\.com\.cn/pk/redir\.do\?[^"\\ ]+')
+          if ($m.Success) {
+            $pk = $m.Value
+            Write-Host "PK URL: $pk"
+            $all += "`r`nPKURL=$pk`r`n"
+            $probe = @()
+            # 1) GET raw
+            $probe += "--- PROBE1 GET raw ---"
+            $probe += (curl.exe -s -D - --max-time 30 $pk | Out-String)
+            # 2) POST raw form
+            $q = ($pk -split '\?')[1]
+            $probe += "--- PROBE2 POST raw form to redir.do ---"
+            $probe += (curl.exe -s -D - --max-time 30 -X POST -H 'User-Agent: okhttp/4.3.23' -H 'Content-Type: application/x-www-form-urlencoded' -d $q 'https://sysupgrade.vivo.com.cn/pk/redir.do' | Out-String)
+            # 3) GET with decoded name
+            $dec = [System.Uri]::UnescapeDataString($q)
+            $probe += "--- PROBE3 GET decoded ---"
+            $probe += (curl.exe -s -D - --max-time 30 -H 'User-Agent: okhttp/4.3.23' ('https://sysupgrade.vivo.com.cn/pk/redir.do?' + $dec) | Out-String)
+            # 4) POST decoded form
+            $probe += "--- PROBE4 POST decoded form ---"
+            $probe += (curl.exe -s -D - --max-time 30 -X POST -H 'User-Agent: okhttp/4.3.23' -H 'Content-Type: application/x-www-form-urlencoded' -d $dec 'https://sysupgrade.vivo.com.cn/pk/redir.do' | Out-String)
+            $all += ($probe -join "`r`n")
+          } else { $all += "`r`nNO-PK-FOUND`r`n" }
+          $all | Out-File -Encoding utf8 C:\tracker\ota-result.txt
       - name: Upload result
         uses: actions/upload-artifact@v4
         with:
